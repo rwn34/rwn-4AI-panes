@@ -10,7 +10,7 @@ $wtExe = "$env:LOCALAPPDATA\Microsoft\WindowsApps\wt.exe"
 
 # ── CLI Detection ──
 $cliClaude = [bool](Get-Command claude -ErrorAction SilentlyContinue)
-$cliKimi = [bool](Get-Command kimi-cli -ErrorAction SilentlyContinue)
+$cliKimi = [bool](Get-Command kimi -ErrorAction SilentlyContinue)
 $cliKiro = [bool](Get-Command kiro-cli -ErrorAction SilentlyContinue)
 
 if (-not ($cliClaude -or $cliKimi -or $cliKiro)) {
@@ -83,6 +83,29 @@ function Get-ProjectInfo($project) {
     if ($branch) { $parts += $branch }
     if ($timeStr) { $parts += $timeStr }
     return $parts -join " "
+}
+
+function Merge-Framework($source, $destination) {
+    if (-not (Test-Path $destination)) {
+        Copy-Item -Path $source -Destination $destination -Recurse -Force
+        return $true
+    }
+    $copied = $false
+    Get-ChildItem -Path $source -Recurse | ForEach-Object {
+        $relPath = $_.FullName.Substring($source.Length + 1)
+        $destPath = Join-Path $destination $relPath
+        if ($_.PSIsContainer) {
+            if (-not (Test-Path $destPath)) {
+                New-Item -ItemType Directory -Path $destPath | Out-Null
+            }
+        } else {
+            if (-not (Test-Path $destPath)) {
+                Copy-Item -Path $_.FullName -Destination $destPath -Force
+                $copied = $true
+            }
+        }
+    }
+    return $copied
 }
 
 # ── Build Menu Items ──
@@ -282,8 +305,24 @@ if ($cliKiro) { $launching += "Kiro" }
 Write-Host "Launching $($launching -join ', ')..." -ForegroundColor Cyan
 
 if ($cliKimi) {
+    # Inject .kimi into project (merge, never overwrite existing files)
+    if ($targetDir) {
+        $backupKimi = Join-Path $scriptDir ".kimi"
+        $targetKimi = Join-Path $targetDir ".kimi"
+        if (Test-Path $backupKimi) {
+            try {
+                $didCopy = Merge-Framework -source $backupKimi -destination $targetKimi
+                if ($didCopy) {
+                    Write-Host "Injected .kimi agents into $($chosen.name)" -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host "Warning: failed to inject .kimi agents: $_" -ForegroundColor Yellow
+            }
+        }
+    }
+
     $dirArg = if ($targetDir) { "-d `"$targetDir`"" } else { "" }
-    $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command kimi-cli --yolo -y"
+    $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command kimi --agent-file .kimi/agents/orchestrator.yaml --yolo"
     $wtCmd = "-w rwn4ai split-pane -V -s 0.6667 $splitCmd"
     try {
         & cmd.exe /c "`"$wtExe`" $wtCmd"
@@ -294,8 +333,44 @@ if ($cliKimi) {
 }
 
 if ($cliKiro) {
+    # Inject .kiro into project (merge, never overwrite existing files)
+    if ($targetDir) {
+        $backupKiro = Join-Path $scriptDir ".kiro"
+        $targetKiro = Join-Path $targetDir ".kiro"
+        if (Test-Path $backupKiro) {
+            try {
+                $didCopy = Merge-Framework -source $backupKiro -destination $targetKiro
+                if ($didCopy) {
+                    Write-Host "Injected .kiro into $($chosen.name)" -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host "Warning: failed to inject .kiro: $_" -ForegroundColor Yellow
+            }
+        }
+        # Inject Kiro agents into global agents dir (merge, never overwrite)
+        $globalKiroAgents = Join-Path $env:USERPROFILE ".kiro\agents"
+        $backupAgents = Join-Path $scriptDir ".kiro\agents"
+        if (Test-Path $backupAgents) {
+            try {
+                $didCopy = $false
+                Get-ChildItem -Path $backupAgents -Filter "*.json" | ForEach-Object {
+                    $dest = Join-Path $globalKiroAgents $_.Name
+                    if (-not (Test-Path $dest)) {
+                        Copy-Item -Path $_.FullName -Destination $dest -Force
+                        $didCopy = $true
+                    }
+                }
+                if ($didCopy) {
+                    Write-Host "Injected Kiro agents into global profile" -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host "Warning: failed to inject Kiro agents: $_" -ForegroundColor Yellow
+            }
+        }
+    }
+
     $dirArg = if ($targetDir) { "-d `"$targetDir`"" } else { "" }
-    $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command kiro-cli chat --trust-all-tools"
+    $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command kiro-cli chat --agent orchestrator --trust-all-tools"
     $wtCmd = "-w rwn4ai split-pane -V -s 0.5 $splitCmd"
     try {
         & cmd.exe /c "`"$wtExe`" $wtCmd"
@@ -308,8 +383,23 @@ if ($cliKiro) {
 # This pane -> Claude
 Clear-Host
 if ($cliClaude) {
-    if ($targetDir) { Set-Location $targetDir }
-    & claude --dangerously-skip-permissions
+    # Inject .claude into project (merge, never overwrite existing files)
+    if ($targetDir) {
+        $backupClaude = Join-Path $scriptDir ".claude"
+        $targetClaude = Join-Path $targetDir ".claude"
+        if (Test-Path $backupClaude) {
+            try {
+                $didCopy = Merge-Framework -source $backupClaude -destination $targetClaude
+                if ($didCopy) {
+                    Write-Host "Injected .claude into $($chosen.name)" -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host "Warning: failed to inject .claude: $_" -ForegroundColor Yellow
+            }
+        }
+        Set-Location $targetDir
+    }
+    & claude --dangerously-skip-permissions --agent orchestrator
 } else {
     Write-Host "Claude CLI not found. This pane is idle." -ForegroundColor Yellow
 }
