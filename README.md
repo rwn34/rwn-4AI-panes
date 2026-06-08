@@ -61,7 +61,7 @@ All code CLI panes open with the selected project as working directory. Hermes r
 
 1. Clone this repo:
 ```
-git clone https://github.com/efransiscus/rwn-4AI-panes.git C:\Users\<you>\.rwn-auto\rwn-4AI-panes
+git clone https://github.com/rwn34/rwn-4AI-panes.git C:\Users\<you>\.rwn-auto\rwn-4AI-panes
 ```
 
 2. **Configure your projects folder** — edit line 5 of `Selector.ps1`:
