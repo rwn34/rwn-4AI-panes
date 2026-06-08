@@ -7,6 +7,8 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectsDir = "C:\Users\rwn34\Code"
 $historyFile = Join-Path $scriptDir ".4pane-history"
 $wtExe = "$env:LOCALAPPDATA\Microsoft\WindowsApps\wt.exe"
+# Local clone of the multi-CLI framework repo; its bash installer is called per launch.
+$frameworkRepo = "C:/Users/rwn34/Code/rwn-multi-cli-skills"
 
 # ── CLI Detection ──
 $cliClaude = [bool](Get-Command claude -ErrorAction SilentlyContinue)
@@ -85,27 +87,66 @@ function Get-ProjectInfo($project) {
     return $parts -join " "
 }
 
-function Merge-Framework($source, $destination) {
-    if (-not (Test-Path $destination)) {
-        Copy-Item -Path $source -Destination $destination -Recurse -Force
-        return $true
+function Find-Bash {
+    $onPath = Get-Command bash -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+    foreach ($p in @("C:\Program Files\Git\bin\bash.exe", "C:\Program Files (x86)\Git\bin\bash.exe")) {
+        if (Test-Path $p) { return $p }
     }
-    $copied = $false
-    Get-ChildItem -Path $source -Recurse | ForEach-Object {
-        $relPath = $_.FullName.Substring($source.Length + 1)
-        $destPath = Join-Path $destination $relPath
-        if ($_.PSIsContainer) {
-            if (-not (Test-Path $destPath)) {
-                New-Item -ItemType Directory -Path $destPath | Out-Null
-            }
-        } else {
-            if (-not (Test-Path $destPath)) {
-                Copy-Item -Path $_.FullName -Destination $destPath -Force
-                $copied = $true
-            }
+    return $null
+}
+
+function Install-Framework($targetDir) {
+    # Install the multi-CLI framework into $targetDir by calling the framework
+    # repo's real bash installer. Resilient: any failure here must never block
+    # the CLI panes from launching.
+    if ([string]::IsNullOrWhiteSpace($targetDir)) { return }
+
+    if (Test-Path (Join-Path $targetDir ".ai\.framework-version")) {
+        Write-Host "Framework already installed, skipping" -ForegroundColor DarkGray
+        return
+    }
+
+    $bashExe = Find-Bash
+    if (-not $bashExe) {
+        Write-Host "Git Bash not found; skipping framework install" -ForegroundColor Yellow
+        return
+    }
+
+    # Installer requires a git repo with at least one commit.
+    $hadCommits = $false
+    if (Test-Path (Join-Path $targetDir ".git")) {
+        & git -C $targetDir rev-parse HEAD 2>$null | Out-Null
+        $hadCommits = ($LASTEXITCODE -eq 0)
+    } else {
+        & git -C $targetDir init | Out-Null
+    }
+    if (-not $hadCommits) {
+        & git -C $targetDir add -A 2>$null | Out-Null
+        & git -C $targetDir commit --allow-empty -m "init" 2>$null | Out-Null
+    } else {
+        # Existing repo with history: don't sweep uncommitted work into the install commit.
+        $dirty = & git -C $targetDir status --porcelain 2>$null
+        if ($dirty) {
+            Write-Host "Project has uncommitted changes; skipping framework install to avoid sweeping them into the install commit. Commit/stash and re-open to adopt." -ForegroundColor Yellow
+            return
         }
     }
-    return $copied
+
+    $bashTarget = $targetDir -replace '\\', '/'
+    $installer = "$frameworkRepo/scripts/install-template.sh"
+    $name = Split-Path $targetDir -Leaf
+    try {
+        $output = & $bashExe $installer $bashTarget 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Framework installed into $name" -ForegroundColor Green
+        } else {
+            Write-Host "Framework install failed (continuing to launch):" -ForegroundColor Yellow
+            Write-Host ($output | Out-String) -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Framework install errored (continuing to launch): $_" -ForegroundColor Yellow
+    }
 }
 
 # ── Build Menu Items ──
@@ -289,6 +330,10 @@ switch ($chosen.type) {
     }
 }
 
+# ── Install Framework ──
+# Run the real bash installer once per launch (idempotent via .ai/.framework-version).
+Install-Framework -targetDir $targetDir
+
 # ── Split Panes ──
 # Layout math:
 #   Phase 1: Hermes(25%) | Selector(75%)
@@ -305,22 +350,6 @@ if ($cliKiro) { $launching += "Kiro" }
 Write-Host "Launching $($launching -join ', ')..." -ForegroundColor Cyan
 
 if ($cliKimi) {
-    # Inject .kimi into project (merge, never overwrite existing files)
-    if ($targetDir) {
-        $backupKimi = Join-Path $scriptDir ".kimi"
-        $targetKimi = Join-Path $targetDir ".kimi"
-        if (Test-Path $backupKimi) {
-            try {
-                $didCopy = Merge-Framework -source $backupKimi -destination $targetKimi
-                if ($didCopy) {
-                    Write-Host "Injected .kimi agents into $($chosen.name)" -ForegroundColor DarkGray
-                }
-            } catch {
-                Write-Host "Warning: failed to inject .kimi agents: $_" -ForegroundColor Yellow
-            }
-        }
-    }
-
     $dirArg = if ($targetDir) { "-d `"$targetDir`"" } else { "" }
     $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command kimi --agent-file .kimi/agents/orchestrator.yaml --yolo"
     $wtCmd = "-w rwn4ai split-pane -V -s 0.6667 $splitCmd"
@@ -333,21 +362,9 @@ if ($cliKimi) {
 }
 
 if ($cliKiro) {
-    # Inject .kiro into project (merge, never overwrite existing files)
     if ($targetDir) {
-        $backupKiro = Join-Path $scriptDir ".kiro"
-        $targetKiro = Join-Path $targetDir ".kiro"
-        if (Test-Path $backupKiro) {
-            try {
-                $didCopy = Merge-Framework -source $backupKiro -destination $targetKiro
-                if ($didCopy) {
-                    Write-Host "Injected .kiro into $($chosen.name)" -ForegroundColor DarkGray
-                }
-            } catch {
-                Write-Host "Warning: failed to inject .kiro: $_" -ForegroundColor Yellow
-            }
-        }
-        # Inject Kiro agents into global agents dir (merge, never overwrite)
+        # Inject Kiro agents into global agents dir (merge, never overwrite).
+        # The project-scoped installer does NOT cover the user's global Kiro profile.
         $globalKiroAgents = Join-Path $env:USERPROFILE ".kiro\agents"
         $backupAgents = Join-Path $scriptDir ".kiro\agents"
         if (Test-Path $backupAgents) {
@@ -383,20 +400,7 @@ if ($cliKiro) {
 # This pane -> Claude
 Clear-Host
 if ($cliClaude) {
-    # Inject .claude into project (merge, never overwrite existing files)
     if ($targetDir) {
-        $backupClaude = Join-Path $scriptDir ".claude"
-        $targetClaude = Join-Path $targetDir ".claude"
-        if (Test-Path $backupClaude) {
-            try {
-                $didCopy = Merge-Framework -source $backupClaude -destination $targetClaude
-                if ($didCopy) {
-                    Write-Host "Injected .claude into $($chosen.name)" -ForegroundColor DarkGray
-                }
-            } catch {
-                Write-Host "Warning: failed to inject .claude: $_" -ForegroundColor Yellow
-            }
-        }
         Set-Location $targetDir
     }
     & claude --dangerously-skip-permissions --agent orchestrator
