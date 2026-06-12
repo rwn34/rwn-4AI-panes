@@ -1,6 +1,6 @@
 # rwn 4AI Panes
 
-> **Goal:** One maximized Windows Terminal window with 4 vertical panes — Hermes, Claude, Kimi, Kiro — no alt-tabbing.
+> **Goal:** One maximized Windows Terminal window with 4 vertical panes — Claude, Kiro, Kimi, Crush — no alt-tabbing.
 
 ---
 
@@ -8,28 +8,28 @@
 
 Creates a **Start Menu shortcut** called **"rwn 4AI Panes"** that opens a Windows Terminal window in two phases:
 
-**Phase 1 — Two panes:**
-- Left (25%): **Hermes Agent** (running via WSL)
-- Right (75%): **Interactive project selector** (box-drawing menu, arrow-key navigation)
+**Phase 1 — Full-screen selector:**
+- Interactive project selector (box-drawing menu, arrow-key navigation)
 
-**Phase 2 — After selecting a project, the right pane splits into three:**
+**Phase 2 — After selecting a project, the pane splits into four:**
 - Claude (`claude --dangerously-skip-permissions`)
-- Kimi (`kimi-cli --yolo -y`)
 - Kiro (`kiro-cli chat --trust-all-tools`)
+- Kimi (`kimi --agent-file .kimi/agents/orchestrator.yaml --yolo`)
+- Crush (`crush --yolo`)
 
-**Final layout:**
+**Default layout:**
 
 ```
 +----------+----------+----------+----------+
 |          |          |          |          |
-| Hermes   | Claude   | Kimi     | Kiro     |
-| (WSL)    |          |          |          |
+| Claude   | Kiro     | Kimi     | Crush    |
+|          |          |          |          |
 |          |          |          |          |
 +----------+----------+----------+----------+
    25%        25%        25%        25%
 ```
 
-All code CLI panes open with the selected project as working directory. Hermes runs independently (no project dir). If a CLI is not installed, that pane is skipped automatically.
+All CLI panes open with the selected project as working directory. If a CLI is not installed, that pane is skipped automatically. Pane order can be customized with the `o` key.
 
 ---
 
@@ -37,11 +37,11 @@ All code CLI panes open with the selected project as working directory. Hermes r
 
 | File | Purpose |
 |------|---------|
-| `Launch4Panes.ps1` | Entry point. Launches wt.exe with 2 panes: Hermes + Selector. Auto-closes after launch. |
-| `Selector.ps1` | Interactive box-drawing menu. Handles project selection and dynamic pane splitting. After splitting, this pane becomes Claude. |
+| `Launch4Panes.ps1` | Entry point. Launches wt.exe with the selector as a single full-screen pane. Auto-closes after launch. |
+| `Selector.ps1` | Interactive box-drawing menu. Handles project selection, layout customization, and dynamic pane splitting. After splitting, this pane becomes the first CLI in the layout. |
 | `Launch4Panes.vbs` | VBS wrapper. Opens the PS1 from Start Menu without leaving a lingering window. |
 | `icon.ico` | Custom icon for the Start Menu shortcut (dark theme, 4 colored bars). |
-| `.gitignore` | Ignores `.4pane-history` and `*.tmp`. |
+| `.gitignore` | Ignores `.4pane-history`, `.4pane-layout`, and `*.tmp`. |
 
 ---
 
@@ -53,9 +53,9 @@ All code CLI panes open with the selected project as working directory. Hermes r
 - **Windows Terminal** (`wt.exe`) — install from Microsoft Store
 - **PowerShell 5.1+**
 - Optional: `claude` on PATH
-- Optional: `kimi-cli` on PATH
 - Optional: `kiro-cli` on PATH
-- Optional: Hermes Agent (`hermes.ps1` via WSL)
+- Optional: `kimi` on PATH
+- Optional: `crush` on PATH
 
 ### 3.2 Install
 
@@ -64,17 +64,12 @@ All code CLI panes open with the selected project as working directory. Hermes r
 git clone https://github.com/rwn34/rwn-4AI-panes.git C:\Users\<you>\.rwn-auto\rwn-4AI-panes
 ```
 
-2. **Configure your projects folder** — edit line 5 of `Selector.ps1`:
+2. **Configure your projects folder** — edit `$projectsDir` in `Selector.ps1`:
 ```powershell
 $projectsDir = "C:\Users\<you>\Code"
 ```
 
-3. **Configure Hermes path** (if different) — edit line 7 of `Launch4Panes.ps1`:
-```powershell
-$hermesPs1 = "C:\Users\<you>\.local\bin\hermes.ps1"
-```
-
-4. **Create the Start Menu shortcut** — run in PowerShell:
+3. **Create the Start Menu shortcut** — run in PowerShell:
 ```powershell
 $shortcutPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\rwn 4AI Panes.lnk"
 $target = "C:\Users\<you>\.rwn-auto\rwn-4AI-panes\Launch4Panes.vbs"
@@ -89,26 +84,52 @@ $Shortcut.Save()
 Write-Host "Shortcut created at: $shortcutPath"
 ```
 
-5. Press **Start**, type **"rwn 4AI Panes"**, click it.
+4. Press **Start**, type **"rwn 4AI Panes"**, click it.
 
 ---
 
 ## 4. How to Use
 
 1. Start Menu → **rwn 4AI Panes**
-2. A maximized Windows Terminal opens with 2 panes: Hermes (left) and the selector (right)
+2. A maximized Windows Terminal opens with the selector
 3. Use the selector to pick a project:
    - **Up/Down arrows** — navigate
    - **Enter** — select
    - **Number keys (1-9)** — quick jump
    - **n** — create new project
    - **w** — open without directory
+   - **o** — open pane order picker (rearrange CLIs)
    - **q** — quit
    - **PageUp/PageDown** — scroll through pages
    - **Home/End** — jump to top/bottom
    - **Escape** — quit
-4. After selecting, the right pane splits into 3 (Claude, Kimi, Kiro)
+4. After selecting, the pane splits into 4 (one per detected CLI)
 5. All four panes are now running — start coding
+
+### Pane Order Picker
+
+Press **o** in the project selector to open the layout picker:
+
+```
++----------------------------------------------+
+| Pane Order (Up/Down to reorder, Enter confirm)|
++----------------------------------------------+
+| > 1. Claude                                   |
+|   2. Kiro                                     |
+|   3. Kimi                                     |
+|   4. Crush                                    |
++----------------------------------------------+
+| Up/Down:select  s/S:swap up/down  Enter:save  |
++----------------------------------------------+
+```
+
+- **Up/Down arrows** — select a CLI
+- **s** — swap selected CLI with the one below it
+- **S** (Shift+s) — swap selected CLI with the one above it
+- **Enter** — save layout and return to project selector
+- **Escape** — cancel and return
+
+The layout is saved to `.4pane-layout` and persists between launches.
 
 ### Menu Items
 
@@ -129,8 +150,7 @@ User clicks shortcut
   -> Launch4Panes.vbs (VBS wrapper, invisible, no lingering window)
     -> Launch4Panes.ps1 (PowerShell)
       -> wt.exe -w rwn4ai -M
-          Pane 1: powershell -> hermes.ps1 -> WSL -> hermes agent
-          Pane 2: split-pane -V -s 0.75 -> powershell -> Selector.ps1
+          Pane 1 (100%): powershell -> Selector.ps1
       -> Stop-Process (kills the launcher PowerShell)
 ```
 
@@ -139,21 +159,25 @@ User clicks shortcut
 After the user picks a project in the selector:
 
 ```
-Phase 1:  Hermes(25%) | Selector(75%)
+Starting: Selector(100%)
   Split 1 (from selector pane):
-    Kimi takes 66.67% of selector's 75% = 50% total
-    -> Hermes(25%) | Claude(25%) | Kimi(50%)
+    Pane2 takes 75% of selector -> Pane1=25%, Pane2=75%
+    -> Claude(25%) | Kiro(75%)
 
-  Split 2 (from kimi pane):
-    Kiro takes 50% of Kimi's 50% = 25% total
-    -> Hermes(25%) | Claude(25%) | Kimi(25%) | Kiro(25%)
+  Split 2 (from Pane2):
+    Pane3 takes 66.67% of Pane2 -> Pane2=25%, Pane3=50%
+    -> Claude(25%) | Kiro(25%) | Kimi(50%)
+
+  Split 3 (from Pane3):
+    Pane4 takes 50% of Pane3 -> Pane3=25%, Pane4=25%
+    -> Claude(25%) | Kiro(25%) | Kimi(25%) | Crush(25%)
 ```
 
-The `-s` flag in `wt.exe split-pane` means "new pane takes this fraction of the **current** pane." By splitting the original 75% selector pane twice, we get 4 equal 25% columns.
+The `-s` flag in `wt.exe split-pane` means "new pane takes this fraction of the **current** pane." Three sequential splits yield 4 equal 25% columns. The split order follows the saved layout — first CLI stays in the original pane, remaining CLIs split off to the right.
 
-### 5.3 Selector Pane Becomes Claude
+### 5.3 Selector Pane Becomes First CLI
 
-After splitting, the selector's PowerShell pane is reused — it clears the menu and launches `claude --dangerously-skip-permissions`. No pane is wasted.
+After splitting, the selector's PowerShell pane is reused — it clears the menu and launches the first CLI in the layout. No pane is wasted.
 
 ### 5.4 Window Naming
 
@@ -164,12 +188,13 @@ The `-w rwn4ai` flag names the Windows Terminal window "rwn4ai". The selector us
 At startup, the selector checks for each CLI on PATH:
 
 ```powershell
-$cliClaude = [bool](Get-Command claude -ErrorAction SilentlyContinue)
-$cliKimi   = [bool](Get-Command kimi-cli -ErrorAction SilentlyContinue)
-$cliKiro   = [bool](Get-Command kiro-cli -ErrorAction SilentlyContinue)
+$cliDefs["Claude"] = @{ detect = "claude"; ... }
+$cliDefs["Kiro"]   = @{ detect = "kiro-cli"; ... }
+$cliDefs["Kimi"]   = @{ detect = "kimi"; ... }
+$cliDefs["Crush"]  = @{ detect = "crush"; ... }
 ```
 
-Missing CLIs are skipped — their pane simply doesn't appear. The status bar shows which CLIs were detected: `Claude[Y] Kimi[Y] Kiro[Y]` (green if all found, yellow if some missing).
+Missing CLIs are skipped — their pane simply doesn't appear. The status bar shows the current layout with availability: `Claude[Y] Kiro[Y] Kimi[Y] Crush[Y]` (green if all found, yellow if some missing).
 
 ---
 
@@ -177,10 +202,11 @@ Missing CLIs are skipped — their pane simply doesn't appear. The status bar sh
 
 | Behavior | Detail |
 |----------|--------|
-| **4-column layout** | Equal 25% each via two sequential `split-pane` calls. |
+| **4-column layout** | Equal 25% each via three sequential `split-pane` calls. |
 | **Maximized** | `-M` flag passed to `wt.exe`. |
 | **Auto-close launcher** | `Stop-Process -Id $PID` kills the launcher PowerShell immediately. |
 | **History** | Last 5 opened projects remembered and shown at top. Stored in `.4pane-history`. |
+| **Layout persistence** | Pane order saved in `.4pane-layout`. Press `o` to change. |
 | **Dot-folder exclusion** | Folders starting with `.` are hidden from the menu. |
 | **Project info** | Shows git branch and last modified time per project. |
 | **Time-ago format** | History shows relative time: "now", "5m", "2h", "1d", "3d". |
@@ -189,9 +215,11 @@ Missing CLIs are skipped — their pane simply doesn't appear. The status bar sh
 
 ---
 
-## 7. History File Format
+## 7. File Formats
 
-`.4pane-history` (JSON, stored alongside scripts):
+### History (`.4pane-history`)
+
+JSON, stored alongside scripts:
 
 ```json
 [
@@ -210,6 +238,17 @@ Missing CLIs are skipped — their pane simply doesn't appear. The status bar sh
 - Duplicates are removed (re-selected project moves to top)
 - Only real project selections are saved (not "new project" or "no directory")
 
+### Layout (`.4pane-layout`)
+
+JSON array of CLI names in pane order (left to right):
+
+```json
+["Claude", "Kiro", "Kimi", "Crush"]
+```
+
+- Defaults to `["Claude", "Kiro", "Kimi", "Crush"]` if file is missing or invalid
+- Only installed CLIs are activated; unavailable ones are skipped at runtime
+
 ---
 
 ## 8. Customization
@@ -221,36 +260,16 @@ $projectsDir = "D:\Projects"
 ```
 
 ### Change CLI commands
-Edit the `split-pane` sections in `Selector.ps1` under the "Split Panes" comment:
+Edit the `$cliDefs` table at the top of `Selector.ps1`:
 ```powershell
-# For example, change Kimi's flags:
-$splitCmd = "$dirArg powershell -NoExit -NoProfile -Command kimi-cli --safe-mode"
+$cliDefs["Claude"] = @{ detect = "claude"; cmd = "claude --safe-mode" }
 ```
 
-### Change pane sizes
-Adjust `-s` values in `Selector.ps1`:
-- First split (`-s 0.6667`): how much of the 75% selector pane Kimi takes
-- Second split (`-s 0.5`): how much of Kimi's pane Kiro takes
+### Change pane order
+Press **o** in the selector menu, or edit `.4pane-layout` directly.
 
-For unequal panes, e.g. Hermes bigger:
-```
-Launch4Panes.ps1: -s 0.70  (Hermes gets 30%, selector gets 70%)
-Selector.ps1:     adjust splits proportionally
-```
-
-### Change Hermes launcher
-Edit `$hermesPs1` in `Launch4Panes.ps1`:
-```powershell
-$hermesPs1 = "C:\path\to\your\hermes.ps1"
-```
-
-### Remove Hermes entirely
-Edit `Launch4Panes.ps1` — remove the hermes pane and make selector take 100%:
-```powershell
-# Single pane, no split
-$wtArgs = "-w rwn4ai -M -d `"$scriptDir`" powershell -NoExit -ExecutionPolicy Bypass -File `"$selectorPs1`""
-```
-Then adjust selector's split math for 3 equal columns instead of 4.
+### Add or remove a CLI
+Edit the `$cliDefs` ordered dictionary in `Selector.ps1`. Each entry needs a `detect` command (for PATH checking) and a `cmd` (the full launch command).
 
 ---
 
@@ -261,7 +280,7 @@ Then adjust selector's split math for 3 equal columns instead of 4.
 | Nothing happens when clicking shortcut | The VBS file may be empty. Verify `Launch4Panes.vbs` is not 0 bytes. |
 | `wt.exe` not found | Install **Windows Terminal** from the Microsoft Store. |
 | Window opens but no selector | Check that `Selector.ps1` exists in the same folder as `Launch4Panes.ps1`. |
-| Pane splits are wrong sizes | The `-s` values are sensitive. `0.6667` = 2/3, `0.5` = 1/2. Adjust carefully. |
+| Pane splits are wrong sizes | The `-s` values are sensitive. `0.75`, `0.6667`, `0.5` for 4 equal panes. Adjust carefully. |
 | Splits go to wrong window | The `-w rwn4ai` window name targets a specific wt window. Close all wt instances and retry. |
 | CLI pane is missing | That CLI isn't on PATH. Install it or check `Get-Command <cli-name>`. |
 | Menu looks garbled | Box-drawing characters need a monospace font in Windows Terminal settings. |
@@ -278,22 +297,9 @@ Then adjust selector's split math for 3 equal columns instead of 4.
 - **PowerShell 5.1+**
 - **Git** (optional — for branch display in menu)
 - Optional: `claude` CLI on PATH
-- Optional: `kimi-cli` on PATH
-- Optional: `kiro-cli` on PATH
-- Optional: Hermes Agent with `hermes.ps1` launcher via WSL
-
----
-
-## 11. Comparison with rwn-threecodepanes
-
-| Feature | rwn-threecodepanes | rwn 4AI Panes |
-|---------|-------------------|---------------|
-| Panes | 3 (Claude, Kimi, Kiro) | 4 (Hermes, Claude, Kimi, Kiro) |
-| Hermes | Not included | Left pane, runs via WSL |
-| Menu style | Number input (text) | Box-drawing, arrow-key navigation |
-| Launch flow | Menu -> 3 panes | Menu -> 2 panes -> dynamic split to 4 |
-| Custom icon | No | Yes (`icon.ico`) |
-| Pagination | Show all / compact (10) | Auto-paged by console height |
+- Optional: `kiro-cli` CLI on PATH
+- Optional: `kimi` CLI on PATH
+- Optional: `crush` CLI on PATH
 
 ---
 

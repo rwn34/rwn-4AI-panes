@@ -1,4 +1,5 @@
 .4pane-history
+.4pane-layout
 *.tmp
 
 # ADDED BY install-template.sh gitignore-merge (template @ eda4614)

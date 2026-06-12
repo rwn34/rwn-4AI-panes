@@ -1,24 +1,57 @@
 # Selector.ps1 - Interactive project selector for rwn-4AI-panes
 # Phase 1: Box-drawing menu with arrow-key navigation
-# Phase 2: Splits current pane into Claude/Kimi/Kiro, runs Claude here
+# Phase 2: Splits into 4 panes: Claude | Kiro | Kimi | Crush
 
 $ErrorActionPreference = "SilentlyContinue"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectsDir = "C:\Users\rwn34\Code"
 $historyFile = Join-Path $scriptDir ".4pane-history"
+$layoutFile = Join-Path $scriptDir ".4pane-layout"
 $wtExe = "$env:LOCALAPPDATA\Microsoft\WindowsApps\wt.exe"
-# Local clone of the multi-CLI framework repo; its bash installer is called per launch.
 $frameworkRepo = "C:/Users/rwn34/Code/rwn-multi-cli-skills"
 
-# ── CLI Detection ──
-$cliClaude = [bool](Get-Command claude -ErrorAction SilentlyContinue)
-$cliKimi = [bool](Get-Command kimi -ErrorAction SilentlyContinue)
-$cliKiro = [bool](Get-Command kiro-cli -ErrorAction SilentlyContinue)
+# ── CLI Definitions ──
+# Each CLI: name, detection command, launch command
+$cliDefs = [ordered]@{}
+$cliDefs["Claude"] = @{ detect = "claude"; cmd = "claude --dangerously-skip-permissions" }
+$cliDefs["Kiro"]   = @{ detect = "kiro-cli"; cmd = "kiro-cli chat --trust-all-tools" }
+$cliDefs["Kimi"]   = @{ detect = "kimi"; cmd = "kimi --agent-file .kimi/agents/orchestrator.yaml --yolo" }
+$cliDefs["Crush"]  = @{ detect = "crush"; cmd = "crush --yolo" }
 
-if (-not ($cliClaude -or $cliKimi -or $cliKiro)) {
-    Write-Host "No code CLIs found (claude, kimi-cli, kiro-cli)." -ForegroundColor Red
+$cliAvailable = @{}
+foreach ($name in $cliDefs.Keys) {
+    $cliAvailable[$name] = [bool](Get-Command $cliDefs[$name].detect -ErrorAction SilentlyContinue)
+}
+
+$anyAvailable = $false
+foreach ($name in $cliAvailable.Keys) {
+    if ($cliAvailable[$name]) { $anyAvailable = $true; break }
+}
+if (-not $anyAvailable) {
+    Write-Host "No code CLIs found (claude, kiro-cli, kimi, crush)." -ForegroundColor Red
     Read-Host "Press Enter to exit"
     Stop-Process -Id $PID
+}
+
+# ── Layout Management ──
+function Get-Layout {
+    if (Test-Path $layoutFile) {
+        try {
+            $raw = Get-Content $layoutFile -Raw | ConvertFrom-Json
+            if ($raw -is [array] -and $raw.Count -gt 0) {
+                $valid = $true
+                foreach ($item in $raw) {
+                    if (-not $cliDefs.Contains($item)) { $valid = $false; break }
+                }
+                if ($valid) { return @($raw) }
+            }
+        } catch {}
+    }
+    return @("Claude", "Kiro", "Kimi", "Crush")
+}
+
+function Save-Layout($layout) {
+    ConvertTo-Json -InputObject $layout | Set-Content $layoutFile
 }
 
 # ── Project Functions ──
@@ -97,9 +130,6 @@ function Find-Bash {
 }
 
 function Install-Framework($targetDir) {
-    # Install the multi-CLI framework into $targetDir by calling the framework
-    # repo's real bash installer. Resilient: any failure here must never block
-    # the CLI panes from launching.
     if ([string]::IsNullOrWhiteSpace($targetDir)) { return }
 
     if (Test-Path (Join-Path $targetDir ".ai\.framework-version")) {
@@ -113,7 +143,6 @@ function Install-Framework($targetDir) {
         return
     }
 
-    # Installer requires a git repo with at least one commit.
     $hadCommits = $false
     if (Test-Path (Join-Path $targetDir ".git")) {
         & git -C $targetDir rev-parse HEAD 2>$null | Out-Null
@@ -125,7 +154,6 @@ function Install-Framework($targetDir) {
         & git -C $targetDir add -A 2>$null | Out-Null
         & git -C $targetDir commit --allow-empty -m "init" 2>$null | Out-Null
     } else {
-        # Existing repo with history: don't sweep uncommitted work into the install commit.
         $dirty = & git -C $targetDir status --porcelain 2>$null
         if ($dirty) {
             Write-Host "Project has uncommitted changes; skipping framework install to avoid sweeping them into the install commit. Commit/stash and re-open to adopt." -ForegroundColor Yellow
@@ -197,19 +225,24 @@ function Draw-Menu {
 
     Clear-Host
 
-    # Top border + title
     Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Cyan
     $title = " rwn-4AI-panes"
     Write-Host ("|" + $title.PadRight($innerW) + "|") -ForegroundColor Cyan
     Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Cyan
 
     # CLI status
-    $cl = if ($cliClaude) { "Y" } else { "N" }
-    $kl = if ($cliKimi) { "Y" } else { "N" }
-    $kl2 = if ($cliKiro) { "Y" } else { "N" }
-    $allOK = $cliClaude -and $cliKimi -and $cliKiro
+    $layout = Get-Layout
+    $statusParts = @()
+    foreach ($name in $layout) {
+        $avail = if ($cliAvailable[$name]) { "Y" } else { "N" }
+        $statusParts += "$name[$avail]"
+    }
+    $allOK = $true
+    foreach ($name in $layout) {
+        if (-not $cliAvailable[$name]) { $allOK = $false; break }
+    }
     $statusColor = if ($allOK) { "Green" } else { "Yellow" }
-    $status = " Claude[$cl]  Kimi[$kl]  Kiro[$kl2]"
+    $status = " " + ($statusParts -join " ")
     Write-Host ("|" + $status.PadRight($innerW) + "|") -ForegroundColor $statusColor
 
     # Separator
@@ -254,7 +287,7 @@ function Draw-Menu {
 
     # Footer
     Write-Host ("|" + ("-" * $innerW) + "|") -ForegroundColor DarkGray
-    $footer = " Up/Down:navigate  Enter:select  n:new  w:no dir  q:quit"
+    $footer = " Up/Down  Enter  n:new  w:no dir  o:order  q:quit"
     if ($footer.Length -gt $innerW) { $footer = $footer.Substring(0, $innerW) }
     Write-Host ("|" + $footer.PadRight($innerW) + "|") -ForegroundColor DarkGray
     Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Cyan
@@ -264,6 +297,73 @@ function Draw-Menu {
         $currentPage = [Math]::Floor($script:pageOffset / $script:pageSize) + 1
         Write-Host " Page $currentPage/$totalPages ($($menuItems.Count) items)" -ForegroundColor DarkGray
     }
+}
+
+function Show-LayoutPicker {
+    $layout = Get-Layout
+    $available = @($layout | Where-Object { $cliAvailable[$_] })
+    if ($available.Count -lt 2) {
+        Write-Host "Need at least 2 CLIs to rearrange." -ForegroundColor Yellow
+        Start-Sleep -Seconds 1
+        return
+    }
+
+    $pickSel = 0
+    $done = $false
+    while (-not $done) {
+        Clear-Host
+        $conW = [Console]::WindowWidth
+        $boxW = [Math]::Max(40, [Math]::Min(72, $conW - 2))
+        $innerW = $boxW - 2
+
+        Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Magenta
+        Write-Host ("|" + " Pane Order (Up/Down to reorder, Enter to confirm)".PadRight($innerW) + "|") -ForegroundColor Magenta
+        Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Magenta
+
+        for ($i = 0; $i -lt $available.Count; $i++) {
+            $marker = if ($i -eq $pickSel) { ">" } else { " " }
+            $paneNum = $i + 1
+            $avail = if ($cliAvailable[$available[$i]]) { "" } else { " (not installed)" }
+            $line = " $marker $paneNum. $($available[$i])$avail"
+            $color = if ($i -eq $pickSel) { "Yellow" } else { "White" }
+            Write-Host ("|" + $line.PadRight($innerW) + "|") -ForegroundColor $color
+        }
+
+        Write-Host ("|" + ("-" * $innerW) + "|") -ForegroundColor DarkGray
+        $helpLine = " Up/Down:select  s/S:swap up/down  Enter:save  Esc:cancel"
+        if ($helpLine.Length -gt $innerW) { $helpLine = $helpLine.Substring(0, $innerW) }
+        Write-Host ("|" + $helpLine.PadRight($innerW) + "|") -ForegroundColor DarkGray
+        Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Magenta
+
+        $key = [System.Console]::ReadKey($true)
+        switch ($key.Key) {
+            'UpArrow'   { $pickSel = [Math]::Max(0, $pickSel - 1) }
+            'DownArrow' { $pickSel = [Math]::Min($available.Count - 1, $pickSel + 1) }
+            'Enter'     { $done = $true }
+            'Escape'    { return }
+            default {
+                $ch = $key.KeyChar
+                if ($ch -eq 's') {
+                    if ($pickSel -lt $available.Count - 1) {
+                        $tmp = $available[$pickSel]
+                        $available[$pickSel] = $available[$pickSel + 1]
+                        $available[$pickSel + 1] = $tmp
+                        $pickSel++
+                    }
+                }
+                elseif ($ch -eq 'S') {
+                    if ($pickSel -gt 0) {
+                        $tmp = $available[$pickSel]
+                        $available[$pickSel] = $available[$pickSel - 1]
+                        $available[$pickSel - 1] = $tmp
+                        $pickSel--
+                    }
+                }
+            }
+        }
+    }
+
+    Save-Layout -layout $available
 }
 
 # ── Key Loop ──
@@ -285,6 +385,7 @@ while (-not $done) {
             $ch = $key.KeyChar
             if ($ch -eq 'n') { $script:selected = $menuItems.Count - 2; $done = $true }
             elseif ($ch -eq 'w') { $script:selected = $menuItems.Count - 1; $done = $true }
+            elseif ($ch -eq 'o') { Show-LayoutPicker }
             elseif ($ch -eq 'q') { Stop-Process -Id $PID }
             elseif ($ch -match '[0-9]') {
                 $num = [int]$ch.ToString()
@@ -331,79 +432,77 @@ switch ($chosen.type) {
 }
 
 # ── Install Framework ──
-# Run the real bash installer once per launch (idempotent via .ai/.framework-version).
 Install-Framework -targetDir $targetDir
 
 # ── Split Panes ──
-# Layout math:
-#   Phase 1: Hermes(25%) | Selector(75%)
-#   Split 1: Kimi takes 66.67% of selector -> 50% total
-#     -> Hermes(25%) | Claude(25%) | Kimi(50%)
-#   Split 2: Kiro takes 50% of Kimi pane -> 25% total
-#     -> Hermes(25%) | Claude(25%) | Kimi(25%) | Kiro(25%)
+# The selector pane becomes the first CLI in the layout.
+# We split off panes for the remaining CLIs.
+# Layout math: starting from 100%, each split takes the right portion.
+# Split 1: pane2 takes 75% of current -> pane1=25%, pane2=75%
+# Split 2: pane3 takes 66.67% of pane2 -> pane2=25%, pane3=50%
+# Split 3: pane4 takes 50% of pane3 -> pane3=25%, pane4=25%
+# Result: 25% each for 4 panes.
 
 Clear-Host
-$launching = @()
-if ($cliClaude) { $launching += "Claude" }
-if ($cliKimi) { $launching += "Kimi" }
-if ($cliKiro) { $launching += "Kiro" }
-Write-Host "Launching $($launching -join ', ')..." -ForegroundColor Cyan
+$layout = Get-Layout
+$activeCLIs = @($layout | Where-Object { $cliAvailable[$_] })
+$launching = $activeCLIs -join ', '
+Write-Host "Launching $launching..." -ForegroundColor Cyan
 
-if ($cliKimi) {
-    $dirArg = if ($targetDir) { "-d `"$targetDir`"" } else { "" }
-    $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command kimi --agent-file .kimi/agents/orchestrator.yaml --yolo"
-    $wtCmd = "-w rwn4ai split-pane -V -s 0.6667 $splitCmd"
-    try {
-        & cmd.exe /c "`"$wtExe`" $wtCmd"
-        Start-Sleep -Milliseconds 400
-    } catch {
-        Write-Host "Failed to launch Kimi pane." -ForegroundColor Red
-    }
+if ($activeCLIs.Count -eq 0) {
+    Write-Host "No CLIs available." -ForegroundColor Red
+    Read-Host "Press Enter to exit"
+    Stop-Process -Id $PID
 }
 
-if ($cliKiro) {
-    if ($targetDir) {
-        # Inject Kiro agents into global agents dir (merge, never overwrite).
-        # The project-scoped installer does NOT cover the user's global Kiro profile.
-        $globalKiroAgents = Join-Path $env:USERPROFILE ".kiro\agents"
-        $backupAgents = Join-Path $scriptDir ".kiro\agents"
-        if (Test-Path $backupAgents) {
-            try {
-                $didCopy = $false
-                Get-ChildItem -Path $backupAgents -Filter "*.json" | ForEach-Object {
-                    $dest = Join-Path $globalKiroAgents $_.Name
-                    if (-not (Test-Path $dest)) {
-                        Copy-Item -Path $_.FullName -Destination $dest -Force
-                        $didCopy = $true
-                    }
+# Kiro agent injection
+if ($cliAvailable["Kiro"] -and $targetDir) {
+    $globalKiroAgents = Join-Path $env:USERPROFILE ".kiro\agents"
+    $backupAgents = Join-Path $scriptDir ".kiro\agents"
+    if (Test-Path $backupAgents) {
+        try {
+            $didCopy = $false
+            Get-ChildItem -Path $backupAgents -Filter "*.json" | ForEach-Object {
+                $dest = Join-Path $globalKiroAgents $_.Name
+                if (-not (Test-Path $dest)) {
+                    Copy-Item -Path $_.FullName -Destination $dest -Force
+                    $didCopy = $true
                 }
-                if ($didCopy) {
-                    Write-Host "Injected Kiro agents into global profile" -ForegroundColor DarkGray
-                }
-            } catch {
-                Write-Host "Warning: failed to inject Kiro agents: $_" -ForegroundColor Yellow
             }
+            if ($didCopy) {
+                Write-Host "Injected Kiro agents into global profile" -ForegroundColor DarkGray
+            }
+        } catch {
+            Write-Host "Warning: failed to inject Kiro agents: $_" -ForegroundColor Yellow
         }
     }
+}
+
+# Split sequence: first CLI stays in this pane, remaining CLIs split off to the right
+$splitFractions = @(0.75, 0.6667, 0.5)
+
+for ($i = 1; $i -lt $activeCLIs.Count; $i++) {
+    $cliName = $activeCLIs[$i]
+    $cliCmd = $cliDefs[$cliName].cmd
+    $fraction = $splitFractions[$i - 1]
 
     $dirArg = if ($targetDir) { "-d `"$targetDir`"" } else { "" }
-    $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command kiro-cli chat --agent orchestrator --trust-all-tools"
-    $wtCmd = "-w rwn4ai split-pane -V -s 0.5 $splitCmd"
+    $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command $cliCmd"
+    $wtCmd = "-w rwn4ai split-pane -V -s $fraction $splitCmd"
     try {
         & cmd.exe /c "`"$wtExe`" $wtCmd"
         Start-Sleep -Milliseconds 400
     } catch {
-        Write-Host "Failed to launch Kiro pane." -ForegroundColor Red
+        Write-Host "Failed to launch $cliName pane." -ForegroundColor Red
     }
 }
 
-# This pane -> Claude
+# This pane -> first CLI in the layout
+$firstCli = $activeCLIs[0]
+$firstCmd = $cliDefs[$firstCli].cmd
+
 Clear-Host
-if ($cliClaude) {
-    if ($targetDir) {
-        Set-Location $targetDir
-    }
-    & claude --dangerously-skip-permissions --agent orchestrator
-} else {
-    Write-Host "Claude CLI not found. This pane is idle." -ForegroundColor Yellow
+if ($targetDir) {
+    Set-Location $targetDir
 }
+& $firstCmd
