@@ -12,6 +12,15 @@ calendar month). See `.ai/activity/archive/README.md` for the rollover protocol.
 
 ---
 
+## 2026-06-20 09:41 — kimi-cli
+- Action: Fixed folder browser so `c` selects the highlighted folder instead of the directory currently being viewed.
+- Files: Selector.ps1
+- Decisions: Added `./` current-directory item at top of browser list; `c` now returns the selected item's path (./, ../, or any subfolder); Enter/Right still navigate into folders. Verified with PSParser.
+  - `rg -n "type = 'current'" Selector.ps1` → `./` item and Green color added
+  - `rg -n "return \$items\[\$sel\]\.path" Selector.ps1` → `c` returns selected path
+
+---
+
 ## 2026-06-20 09:35 — kimi-cli
 - Action: Created the Start Menu shortcut "rwn 4AI Panes" pointing to Launch4Panes.vbs with icon.ico.
 - Files: —

@@ -396,6 +396,8 @@ function Show-FolderBrowser {
 
     while (-not $done) {
         $items = [System.Collections.ArrayList]::new()
+        [void]$items.Add([PSCustomObject]@{ name = './'; path = $current; type = 'current' })
+
         $canGoUp = ($current -ne $projectsDir) -and
             ($current.StartsWith($projectsDir, [System.StringComparison]::OrdinalIgnoreCase))
         if ($canGoUp) {
@@ -444,6 +446,7 @@ function Show-FolderBrowser {
             $line = " $marker $($item.name)"
             $color = if ($isSel) { "Yellow" } else { "White" }
             if ($item.type -eq 'parent') { $color = if ($isSel) { "Yellow" } else { "DarkGray" } }
+            elseif ($item.type -eq 'current') { $color = if ($isSel) { "Yellow" } else { "Green" } }
             Write-Host ("|" + $line.PadRight($innerW) + "|") -ForegroundColor $color
         }
 
@@ -493,6 +496,9 @@ function Show-FolderBrowser {
             default {
                 $ch = $key.KeyChar
                 if ($ch -eq 'c') {
+                    if ($items.Count -gt 0) {
+                        return $items[$sel].path
+                    }
                     return $current
                 }
                 elseif ($ch -eq 'q') {
