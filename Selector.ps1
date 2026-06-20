@@ -3,6 +3,17 @@
 # Phase 2: Splits into 4 panes: Claude | Kiro | Kimi | Crush
 
 $ErrorActionPreference = "SilentlyContinue"
+
+# Refresh process PATH from user environment in case the parent process (e.g. Windows Terminal) has a stale PATH
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$procPath = [Environment]::GetEnvironmentVariable('Path', 'Process')
+if ($userPath -and $procPath) {
+    $missing = @($userPath -split ';' | Where-Object { $_ -and ($procPath -notlike "*$_*") })
+    if ($missing.Count -gt 0) {
+        [Environment]::SetEnvironmentVariable('Path', "$procPath;$userPath", 'Process')
+    }
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectsDir = "C:\Users\rwn34\Code"
 $historyFile = Join-Path $scriptDir ".4pane-history"
@@ -15,7 +26,7 @@ $frameworkRepo = "C:/Users/rwn34/Code/rwn-multi-cli-skills"
 $cliDefs = [ordered]@{}
 $cliDefs["Claude"] = @{ detect = "claude"; cmd = "claude --dangerously-skip-permissions" }
 $cliDefs["Kiro"]   = @{ detect = "kiro-cli"; cmd = "kiro-cli chat --trust-all-tools" }
-$cliDefs["Kimi"]   = @{ detect = "kimi"; cmd = "kimi --agent-file .kimi/agents/orchestrator.yaml --yolo" }
+$cliDefs["Kimi"]   = @{ detect = "kimi"; cmd = "kimi --yolo" }
 $cliDefs["Crush"]  = @{ detect = "crush"; cmd = "crush --yolo" }
 
 $cliAvailable = @{}
@@ -203,6 +214,7 @@ foreach ($p in $ordered) {
     $ago = if ($histEntry) { Format-TimeAgo -timestamp $histEntry.timestamp } else { "" }
     [void]$menuItems.Add(@{ name = $p; info = $info; lastUsed = $ago; type = 'project' })
 }
+[void]$menuItems.Add(@{ name = '[>] Browse folder...'; info = ''; lastUsed = ''; type = 'browse' })
 [void]$menuItems.Add(@{ name = '[+] New project...'; info = ''; lastUsed = ''; type = 'new' })
 [void]$menuItems.Add(@{ name = '[*] Open without directory'; info = ''; lastUsed = ''; type = 'nodir' })
 
@@ -287,7 +299,7 @@ function Draw-Menu {
 
     # Footer
     Write-Host ("|" + ("-" * $innerW) + "|") -ForegroundColor DarkGray
-    $footer = " Up/Down  Enter  n:new  w:no dir  o:order  q:quit"
+    $footer = " Up/Down  Enter  b:browse  n:new  w:no dir  o:order  q:quit"
     if ($footer.Length -gt $innerW) { $footer = $footer.Substring(0, $innerW) }
     Write-Host ("|" + $footer.PadRight($innerW) + "|") -ForegroundColor DarkGray
     Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Cyan
@@ -366,6 +378,145 @@ function Show-LayoutPicker {
     Save-Layout -layout $available
 }
 
+# ── Folder Browser ──
+function Show-FolderBrowser {
+    param([string]$Root = $projectsDir)
+
+    $current = Resolve-Path $Root -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Path
+    if (-not $current -or -not (Test-Path $current -PathType Container)) {
+        $current = $PSScriptRoot
+    }
+
+    $sel = 0
+    $pageOffset = 0
+    $pageSize = [Math]::Max(3, [Console]::WindowHeight - 13)
+    $done = $false
+    $cancel = $false
+
+    while (-not $done) {
+        $items = [System.Collections.ArrayList]::new()
+        $canGoUp = ($current -ne $projectsDir) -and
+            ($current.StartsWith($projectsDir, [System.StringComparison]::OrdinalIgnoreCase))
+        if ($canGoUp) {
+            $parent = Split-Path -Parent $current
+            [void]$items.Add([PSCustomObject]@{ name = '../'; path = $parent; type = 'parent' })
+        }
+
+        try {
+            Get-ChildItem -Path $current -Directory -ErrorAction SilentlyContinue |
+                Sort-Object Name |
+                ForEach-Object {
+                    [void]$items.Add([PSCustomObject]@{
+                        name = $_.Name + '/'
+                        path = $_.FullName
+                        type = 'dir'
+                    })
+                }
+        } catch {}
+
+        if ($sel -lt 0) { $sel = 0 }
+        if ($sel -ge $items.Count) { $sel = [Math]::Max(0, $items.Count - 1) }
+        if ($sel -lt $pageOffset) { $pageOffset = $sel }
+        if ($sel -ge $pageOffset + $pageSize) { $pageOffset = $sel - $pageSize + 1 }
+
+        $visibleCount = [Math]::Min($pageSize, $items.Count - $pageOffset)
+
+        $conW = [Console]::WindowWidth
+        $boxW = [Math]::Max(40, [Math]::Min(72, $conW - 2))
+        $innerW = $boxW - 2
+
+        Clear-Host
+        Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Cyan
+        Write-Host ("|" + " Browse Folder".PadRight($innerW) + "|") -ForegroundColor Cyan
+        Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Cyan
+
+        $pathLine = " " + $current
+        if ($pathLine.Length -gt $innerW) { $pathLine = $pathLine.Substring(0, $innerW - 3) + "..." }
+        Write-Host ("|" + $pathLine.PadRight($innerW) + "|") -ForegroundColor DarkGray
+        Write-Host ("|" + ("-" * $innerW) + "|") -ForegroundColor DarkGray
+
+        for ($i = 0; $i -lt $visibleCount; $i++) {
+            $idx = $pageOffset + $i
+            $item = $items[$idx]
+            $isSel = ($idx -eq $sel)
+            $marker = if ($isSel) { ">" } else { " " }
+            $line = " $marker $($item.name)"
+            $color = if ($isSel) { "Yellow" } else { "White" }
+            if ($item.type -eq 'parent') { $color = if ($isSel) { "Yellow" } else { "DarkGray" } }
+            Write-Host ("|" + $line.PadRight($innerW) + "|") -ForegroundColor $color
+        }
+
+        for ($i = $visibleCount; $i -lt $pageSize; $i++) {
+            Write-Host ("|" + (" " * $innerW) + "|") -ForegroundColor DarkGray
+        }
+
+        Write-Host ("|" + ("-" * $innerW) + "|") -ForegroundColor DarkGray
+        $help = " Up/Down  Enter/Right:open  Left/Back:up  c:select  Esc:cancel"
+        if ($help.Length -gt $innerW) { $help = $help.Substring(0, $innerW) }
+        Write-Host ("|" + $help.PadRight($innerW) + "|") -ForegroundColor DarkGray
+        Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Cyan
+
+        $key = [System.Console]::ReadKey($true)
+        switch ($key.Key) {
+            'UpArrow'    { $sel = [Math]::Max(0, $sel - 1) }
+            'DownArrow'  { $sel = [Math]::Min([Math]::Max(0, $items.Count - 1), $sel + 1) }
+            'Enter'      {
+                if ($items.Count -gt 0) {
+                    $current = $items[$sel].path
+                    $sel = 0
+                    $pageOffset = 0
+                }
+            }
+            'RightArrow' {
+                if ($items.Count -gt 0) {
+                    $current = $items[$sel].path
+                    $sel = 0
+                    $pageOffset = 0
+                }
+            }
+            'LeftArrow'  {
+                if ($canGoUp) {
+                    $current = Split-Path -Parent $current
+                    $sel = 0
+                    $pageOffset = 0
+                }
+            }
+            'Backspace'  {
+                if ($canGoUp) {
+                    $current = Split-Path -Parent $current
+                    $sel = 0
+                    $pageOffset = 0
+                }
+            }
+            'Escape'     { $done = $true; $cancel = $true }
+            default {
+                $ch = $key.KeyChar
+                if ($ch -eq 'c') {
+                    return $current
+                }
+                elseif ($ch -eq 'q') {
+                    $done = $true; $cancel = $true
+                }
+            }
+        }
+    }
+
+    if ($cancel) { return $null }
+    return $current
+}
+
+$script:targetDirFromBrowse = $null
+
+function Invoke-Browse {
+    $path = Show-FolderBrowser -Root $projectsDir
+    if ($path) {
+        $script:targetDirFromBrowse = $path
+        return $true
+    }
+    return $false
+}
+
 # ── Key Loop ──
 $done = $false
 while (-not $done) {
@@ -375,7 +526,13 @@ while (-not $done) {
     switch ($key.Key) {
         'UpArrow'   { $script:selected = [Math]::Max(0, $script:selected - 1) }
         'DownArrow' { $script:selected = [Math]::Min($menuItems.Count - 1, $script:selected + 1) }
-        'Enter'     { $done = $true }
+        'Enter'     {
+            if ($menuItems[$script:selected].type -eq 'browse') {
+                if (Invoke-Browse) { $done = $true }
+            } else {
+                $done = $true
+            }
+        }
         'Escape'    { Stop-Process -Id $PID }
         'PageUp'    { $script:selected = [Math]::Max(0, $script:selected - $script:pageSize) }
         'PageDown'  { $script:selected = [Math]::Min($menuItems.Count - 1, $script:selected + $script:pageSize) }
@@ -383,8 +540,21 @@ while (-not $done) {
         'End'       { $script:selected = $menuItems.Count - 1 }
         default {
             $ch = $key.KeyChar
-            if ($ch -eq 'n') { $script:selected = $menuItems.Count - 2; $done = $true }
-            elseif ($ch -eq 'w') { $script:selected = $menuItems.Count - 1; $done = $true }
+            if ($ch -eq 'b') {
+                if (Invoke-Browse) { $done = $true }
+            }
+            elseif ($ch -eq 'n') {
+                for ($i = 0; $i -lt $menuItems.Count; $i++) {
+                    if ($menuItems[$i].type -eq 'new') { $script:selected = $i; break }
+                }
+                $done = $true
+            }
+            elseif ($ch -eq 'w') {
+                for ($i = 0; $i -lt $menuItems.Count; $i++) {
+                    if ($menuItems[$i].type -eq 'nodir') { $script:selected = $i; break }
+                }
+                $done = $true
+            }
             elseif ($ch -eq 'o') { Show-LayoutPicker }
             elseif ($ch -eq 'q') { Stop-Process -Id $PID }
             elseif ($ch -match '[0-9]') {
@@ -425,6 +595,17 @@ switch ($chosen.type) {
         }
         Save-History -project $name
         Start-Sleep -Milliseconds 500
+    }
+    'browse' {
+        $targetDir = $script:targetDirFromBrowse
+        if ($targetDir) {
+            $histName = Split-Path $targetDir -Leaf
+            if ($targetDir.StartsWith($projectsDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $rel = $targetDir.Substring($projectsDir.Length).TrimStart('\', '/')
+                if ($rel) { $histName = $rel }
+            }
+            Save-History -project $histName
+        }
     }
     'nodir' {
         $targetDir = $null
@@ -487,7 +668,7 @@ for ($i = 1; $i -lt $activeCLIs.Count; $i++) {
     $fraction = $splitFractions[$i - 1]
 
     $dirArg = if ($targetDir) { "-d `"$targetDir`"" } else { "" }
-    $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command $cliCmd"
+    $splitCmd = "$dirArg powershell -NoExit -NoProfile -Command `"$cliCmd`""
     $wtCmd = "-w rwn4ai split-pane -V -s $fraction $splitCmd"
     try {
         & cmd.exe /c "`"$wtExe`" $wtCmd"
@@ -505,4 +686,4 @@ Clear-Host
 if ($targetDir) {
     Set-Location $targetDir
 }
-& $firstCmd
+Invoke-Expression $firstCmd

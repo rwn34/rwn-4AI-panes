@@ -12,3 +12,12 @@ calendar month). See `.ai/activity/archive/README.md` for the rollover protocol.
 
 ---
 
+## 2026-06-20 09:13 — kimi-cli
+- Action: Added a console folder browser to Selector.ps1 so users can browse subfolders and select any subfolder as the project directory.
+- Files: Selector.ps1
+- Decisions: Implemented `Show-FolderBrowser` with Up/Down/Enter/Right/Left/Backspace/c/Esc controls; added `[>] Browse folder...` menu item and `b` shortcut; constrained browsing to `$projectsDir` and below. Syntax-checked with PSParser.
+  - `rg -n "Show-FolderBrowser" Selector.ps1` → function defined at line 382
+  - `rg -n "Browse folder" Selector.ps1` → menu item and footer hints added
+
+---
+
