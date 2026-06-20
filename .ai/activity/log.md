@@ -12,6 +12,14 @@ calendar month). See `.ai/activity/archive/README.md` for the rollover protocol.
 
 ---
 
+## 2026-06-20 09:35 — kimi-cli
+- Action: Created the Start Menu shortcut "rwn 4AI Panes" pointing to Launch4Panes.vbs with icon.ico.
+- Files: —
+- Decisions: Used WScript.Shell COM object; shortcut placed in `$env:APPDATA\Microsoft\Windows\Start Menu\Programs\`; left VBS path hardcoded as-is. Verified shortcut file exists.
+  - `ls "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\rwn 4AI Panes.lnk"` → file created
+
+---
+
 ## 2026-06-20 09:13 — kimi-cli
 - Action: Added a console folder browser to Selector.ps1 so users can browse subfolders and select any subfolder as the project directory.
 - Files: Selector.ps1
