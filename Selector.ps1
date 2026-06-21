@@ -143,49 +143,192 @@ function Find-Bash {
 function Install-Framework($targetDir) {
     if ([string]::IsNullOrWhiteSpace($targetDir)) { return }
 
-    if (Test-Path (Join-Path $targetDir ".ai\.framework-version")) {
+    $logFile = Join-Path $scriptDir "install-framework.log"
+    function Write-InstallLog($msg) {
+        $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        "[$ts] $msg" | Out-File -FilePath $logFile -Append -Encoding utf8
+    }
+    Write-InstallLog "=== Install-Framework start ==="
+    Write-InstallLog "targetDir: $targetDir"
+
+    $fwMarker = Join-Path $targetDir ".ai\.framework-version"
+    Write-InstallLog "framework marker exists: $(Test-Path $fwMarker)"
+    if (Test-Path $fwMarker) {
         Write-Host "Framework already installed, skipping" -ForegroundColor DarkGray
+        Write-InstallLog "Skipped: framework marker exists"
+        return
+    }
+
+    # Determine the framework template source. Prefer the configured repo,
+    # but fall back to the launcher directory if the repo is missing or empty,
+    # so the script can still self-inject even when the external repo path
+    # is unavailable.
+    $fwSource = $null
+    if ((Test-Path $frameworkRepo) -and (Test-Path (Join-Path $frameworkRepo '.ai'))) {
+        $fwSource = $frameworkRepo
+    } elseif (Test-Path (Join-Path $scriptDir '.ai')) {
+        $fwSource = $scriptDir
+        Write-InstallLog "frameworkRepo unavailable or incomplete; using scriptDir as template source"
+    }
+    Write-InstallLog "fwSource: $fwSource"
+
+    if (-not $fwSource) {
+        Write-Host "Framework template source not found; skipping framework install" -ForegroundColor Yellow
+        Write-InstallLog "Skipped: no framework template source"
         return
     }
 
     $bashExe = Find-Bash
+    Write-InstallLog "bashExe: $bashExe"
     if (-not $bashExe) {
-        Write-Host "Git Bash not found; skipping framework install" -ForegroundColor Yellow
-        return
+        Write-Host "Git Bash not found; will try direct template copy fallback" -ForegroundColor Yellow
+        Write-InstallLog "Git Bash not found; proceeding to fallback copy"
     }
 
     $hadCommits = $false
-    if (Test-Path (Join-Path $targetDir ".git")) {
+    $gitExists = Test-Path (Join-Path $targetDir ".git")
+    Write-InstallLog ".git exists: $gitExists"
+    if ($gitExists) {
         & git -C $targetDir rev-parse HEAD 2>$null | Out-Null
         $hadCommits = ($LASTEXITCODE -eq 0)
+        Write-InstallLog "rev-parse HEAD exit: $LASTEXITCODE, hadCommits: $hadCommits"
     } else {
+        Write-InstallLog "Running git init"
         & git -C $targetDir init | Out-Null
+        Write-InstallLog "git init exit: $LASTEXITCODE"
     }
     if (-not $hadCommits) {
+        # Newly-initialized repos often lack user identity; set a local one so
+        # the initial commit and the installer's commit both succeed.
+        & git -C $targetDir config user.email "ai-framework@local" 2>$null | Out-Null
+        & git -C $targetDir config user.name "AI Framework Installer" 2>$null | Out-Null
         & git -C $targetDir add -A 2>$null | Out-Null
+        Write-InstallLog "git add exit: $LASTEXITCODE"
         & git -C $targetDir commit --allow-empty -m "init" 2>$null | Out-Null
+        Write-InstallLog "git commit exit: $LASTEXITCODE"
     } else {
         $dirty = & git -C $targetDir status --porcelain 2>$null
+        Write-InstallLog "git status porcelein length: $($dirty.Length)"
         if ($dirty) {
             Write-Host "Project has uncommitted changes; skipping framework install to avoid sweeping them into the install commit. Commit/stash and re-open to adopt." -ForegroundColor Yellow
+            Write-InstallLog "Skipped: dirty working tree"
             return
         }
     }
 
     $bashTarget = $targetDir -replace '\\', '/'
-    $installer = "$frameworkRepo/scripts/install-template.sh"
+    $installer = "$fwSource/scripts/install-template.sh"
     $name = Split-Path $targetDir -Leaf
-    try {
-        $output = & $bashExe $installer $bashTarget 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "Framework installed into $name" -ForegroundColor Green
-        } else {
-            Write-Host "Framework install failed (continuing to launch):" -ForegroundColor Yellow
-            Write-Host ($output | Out-String) -ForegroundColor Yellow
+    Write-InstallLog "installer: $installer"
+    Write-InstallLog "bashTarget: $bashTarget"
+    if ($bashExe) {
+        try {
+            $output = & $bashExe $installer $bashTarget 2>&1
+            Write-InstallLog "installer exit code: $LASTEXITCODE"
+            Write-InstallLog "installer output length: $($output.Length)"
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "Framework installed into $name" -ForegroundColor Green
+                Write-InstallLog "Success"
+            } else {
+                Write-Host "Framework install failed (continuing to launch):" -ForegroundColor Yellow
+                Write-Host ($output | Out-String) -ForegroundColor Yellow
+                Write-InstallLog "FAILED"
+                Write-InstallLog ($output | Out-String)
+            }
+        } catch {
+            Write-Host "Framework install errored (continuing to launch): $_" -ForegroundColor Yellow
+            Write-InstallLog "ERROR: $_"
         }
-    } catch {
-        Write-Host "Framework install errored (continuing to launch): $_" -ForegroundColor Yellow
     }
+    $templateItems = @(
+        '.ai',
+        '.claude',
+        '.kimi',
+        '.kiro',
+        '.archive',
+        'CLAUDE.md',
+        'AGENTS.md',
+        'docs/architecture/0001-root-file-exceptions.md',
+        '.github/workflows/framework-check.yml',
+        '.codegraph/config.json'
+    )
+    $missingItems = @($templateItems | Where-Object { -not (Test-Path (Join-Path $targetDir $_)) })
+    Write-InstallLog "post-install missing items: $($missingItems -join ', ')"
+
+    # Fallback: if the installer didn't create all required items (failed early,
+    # missing git, verification failed before copy, etc.), copy the core template
+    # files ourselves so the selected folder is never left incomplete.
+    if ($missingItems.Count -gt 0) {
+        Write-Host "Framework install incomplete; injecting missing template files directly..." -ForegroundColor Yellow
+        Write-InstallLog "Fallback: copying core framework template files"
+        foreach ($item in $templateItems) {
+            $src = Join-Path $fwSource $item
+            $dst = Join-Path $targetDir $item
+            if (-not (Test-Path $src)) {
+                Write-InstallLog "Fallback skip (source missing): $item"
+                continue
+            }
+            try {
+                if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+                if (Test-Path $src -PathType Container) {
+                    Copy-Item -Path $src -Destination $dst -Recurse -Force
+                } else {
+                    $parent = Split-Path -Parent $dst
+                    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+                    Copy-Item -Path $src -Destination $dst -Force
+                }
+                Write-InstallLog "Fallback copied: $item"
+            } catch {
+                Write-InstallLog "Fallback failed to copy ${item}: $_"
+            }
+        }
+
+        # Reset the activity log to the clean template header so it doesn't
+        # contain the template repo's history.
+        $activityLog = Join-Path $targetDir '.ai\activity\log.md'
+        if (Test-Path $activityLog) {
+            $cleanHeader = @(
+                '# Activity Log',
+                '',
+                'Newest entries at the top. Each CLI prepends an entry after completing substantive work.',
+                '',
+                '**Timestamp rule:** the `HH:MM` in each entry heading is local wall-clock time at the',
+                'moment of prepending (i.e. when the work finished, not when it started). CLIs on',
+                'different local clocks may produce timestamps that don''t sort monotonically;',
+                '**prepend order is the authoritative sequencing**, timestamps are annotations.',
+                '',
+                '**Archive:** older entries live in `.ai/activity/archive/YYYY-MM.md` (one file per',
+                'calendar month). See `.ai/activity/archive/README.md` for the rollover protocol.',
+                '',
+                '---',
+                ''
+            ) -join "`r`n"
+            $cleanHeader | Set-Content -Path $activityLog -Encoding utf8 -NoNewline
+            Write-InstallLog "Fallback reset activity log"
+        }
+
+        # Stamp a minimal framework version marker.
+        try {
+            $markerDir = Join-Path $targetDir '.ai'
+            if (-not (Test-Path $markerDir)) { New-Item -ItemType Directory -Path $markerDir -Force | Out-Null }
+            $markerPath = Join-Path $markerDir '.framework-version'
+            $markerJson = @{
+                framework_version = '0.0.3'
+                installer_name = 'Selector.ps1 fallback'
+                installer_version = '0.0.3'
+                installed_at = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+                upgrade_history = @()
+            } | ConvertTo-Json -Depth 3
+            $markerJson | Set-Content -Path $markerPath -Encoding utf8
+            Write-InstallLog "Fallback wrote .ai/.framework-version"
+        } catch {
+            Write-InstallLog "Fallback failed to write marker: $_"
+        }
+
+        Write-Host "Framework files injected into $name" -ForegroundColor Green
+    }
+
+    Write-InstallLog "=== Install-Framework end ==="
 }
 
 # ── Build Menu Items ──
@@ -388,34 +531,51 @@ function Show-FolderBrowser {
         $current = $PSScriptRoot
     }
 
-    $sel = 0
-    $pageOffset = 0
-    $pageSize = [Math]::Max(3, [Console]::WindowHeight - 13)
-    $done = $false
-    $cancel = $false
+    function Get-BrowserItems($path) {
+        $list = [System.Collections.ArrayList]::new()
+        [void]$list.Add([PSCustomObject]@{ name = './'; path = $path; type = 'current' })
 
-    while (-not $done) {
-        $items = [System.Collections.ArrayList]::new()
-        [void]$items.Add([PSCustomObject]@{ name = './'; path = $current; type = 'current' })
-
-        $canGoUp = ($current -ne $projectsDir) -and
-            ($current.StartsWith($projectsDir, [System.StringComparison]::OrdinalIgnoreCase))
-        if ($canGoUp) {
-            $parent = Split-Path -Parent $current
-            [void]$items.Add([PSCustomObject]@{ name = '../'; path = $parent; type = 'parent' })
+        $canGoUpLocal = ($path -ne $projectsDir) -and
+            ($path.StartsWith($projectsDir, [System.StringComparison]::OrdinalIgnoreCase))
+        if ($canGoUpLocal) {
+            $parent = Split-Path -Parent $path
+            [void]$list.Add([PSCustomObject]@{ name = '../'; path = $parent; type = 'parent' })
         }
 
         try {
-            Get-ChildItem -Path $current -Directory -ErrorAction SilentlyContinue |
+            Get-ChildItem -Path $path -Directory -ErrorAction SilentlyContinue |
                 Sort-Object Name |
                 ForEach-Object {
-                    [void]$items.Add([PSCustomObject]@{
+                    [void]$list.Add([PSCustomObject]@{
                         name = $_.Name + '/'
                         path = $_.FullName
                         type = 'dir'
                     })
                 }
         } catch {}
+
+        return $list
+    }
+
+    function Get-FirstSubfolderIndex($list) {
+        for ($i = 0; $i -lt $list.Count; $i++) {
+            if ($list[$i].type -eq 'dir') { return $i }
+        }
+        return -1
+    }
+
+    $initialItems = Get-BrowserItems -path $current
+    $initialFirstSub = Get-FirstSubfolderIndex -list $initialItems
+    $sel = if ($initialFirstSub -ge 0) { $initialFirstSub } else { 0 }
+    $pageOffset = 0
+    $pageSize = [Math]::Max(3, [Console]::WindowHeight - 13)
+    $done = $false
+    $cancel = $false
+
+    while (-not $done) {
+        $items = Get-BrowserItems -path $current
+        $canGoUp = ($current -ne $projectsDir) -and
+            ($current.StartsWith($projectsDir, [System.StringComparison]::OrdinalIgnoreCase))
 
         if ($sel -lt 0) { $sel = 0 }
         if ($sel -ge $items.Count) { $sel = [Math]::Max(0, $items.Count - 1) }
@@ -455,7 +615,7 @@ function Show-FolderBrowser {
         }
 
         Write-Host ("|" + ("-" * $innerW) + "|") -ForegroundColor DarkGray
-        $help = " Up/Down  Enter/Right:open  Left/Back:up  c:select  Esc:cancel"
+        $help = " Up/Down  Enter/Right:open/select  Left/Back:up  c:select  Esc:cancel"
         if ($help.Length -gt $innerW) { $help = $help.Substring(0, $innerW) }
         Write-Host ("|" + $help.PadRight($innerW) + "|") -ForegroundColor DarkGray
         Write-Host ("+" + "-" * $innerW + "+") -ForegroundColor Cyan
@@ -466,29 +626,43 @@ function Show-FolderBrowser {
             'DownArrow'  { $sel = [Math]::Min([Math]::Max(0, $items.Count - 1), $sel + 1) }
             'Enter'      {
                 if ($items.Count -gt 0) {
+                    if ($items[$sel].type -eq 'current') {
+                        return $items[$sel].path
+                    }
                     $current = $items[$sel].path
-                    $sel = 0
+                    $newItems = Get-BrowserItems -path $current
+                    $firstSub = Get-FirstSubfolderIndex -list $newItems
+                    $sel = if ($firstSub -ge 0) { $firstSub } else { 0 }
                     $pageOffset = 0
                 }
             }
             'RightArrow' {
                 if ($items.Count -gt 0) {
+                    if ($items[$sel].type -eq 'current') {
+                        return $items[$sel].path
+                    }
                     $current = $items[$sel].path
-                    $sel = 0
+                    $newItems = Get-BrowserItems -path $current
+                    $firstSub = Get-FirstSubfolderIndex -list $newItems
+                    $sel = if ($firstSub -ge 0) { $firstSub } else { 0 }
                     $pageOffset = 0
                 }
             }
             'LeftArrow'  {
                 if ($canGoUp) {
                     $current = Split-Path -Parent $current
-                    $sel = 0
+                    $newItems = Get-BrowserItems -path $current
+                    $firstSub = Get-FirstSubfolderIndex -list $newItems
+                    $sel = if ($firstSub -ge 0) { $firstSub } else { 0 }
                     $pageOffset = 0
                 }
             }
             'Backspace'  {
                 if ($canGoUp) {
                     $current = Split-Path -Parent $current
-                    $sel = 0
+                    $newItems = Get-BrowserItems -path $current
+                    $firstSub = Get-FirstSubfolderIndex -list $newItems
+                    $sel = if ($firstSub -ge 0) { $firstSub } else { 0 }
                     $pageOffset = 0
                 }
             }
@@ -518,6 +692,12 @@ function Invoke-Browse {
     $path = Show-FolderBrowser -Root $projectsDir
     if ($path) {
         $script:targetDirFromBrowse = $path
+        for ($i = 0; $i -lt $menuItems.Count; $i++) {
+            if ($menuItems[$i].type -eq 'browse') {
+                $script:selected = $i
+                break
+            }
+        }
         return $true
     }
     return $false
